@@ -14,9 +14,10 @@ import time
 import threading
 from queue import Queue
 
-
+#get current path of this file
 CURPATH=os.path.dirname(os.path.realpath(__file__))
 
+#many queues use to communicate around different threads
 color_q=Queue()
 plate_q=Queue()
 type_q=Queue()
@@ -27,17 +28,19 @@ img_car_q=Queue()
 to_color_q=Queue()
 time_q=Queue()
 
+#used to control different thread by calling event.set and event.wait
 even_yolo=threading.Event()
 even_model=threading.Event()
 even_color=threading.Event()
 even_license=threading.Event()
 
-
+#thread of model classification,not implemented
 class MODEL_thread(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
+	#model_thread_running used to stop the thread when needed
         self.model_thread_running=True
-        self.daemon = True
+        #self.daemon = True
         '''
         self.classes=('background','richan','jipu','benchi','bentian','fengtian','aodi','wuling','baoma','dazhong',
 'qirui','xuefulan','lufeng','futian','mazida','dongfeng','sibalu','biaozhi','jianghuai',
@@ -63,7 +66,7 @@ class MODEL_thread(threading.Thread):
             else:
                 nd.settable('ERROR',False,False,False,False)
                 continue
-            nd.settable('NOT IMPLEMENTED',False,False,False,False)
+            nd.settable('NOT IMPLEMENTED',False,False,False,False)#added
             '''
             height=img.shape[0]
             width=img.shape[1]
@@ -91,8 +94,11 @@ class MODEL_thread(threading.Thread):
     def close(self):
         pass
 
+#thread of vehicle detection, trained with darknet yolo, this repo provide coco pretrained model
 
 class YOLO_thread(threading.Thread):
+    #init by loading the model file and load it using opencv DNN 
+    #get detecting bounding box area by loading config.ini, this para is in line 2,which mean index by [1]
     def __init__(self):
         threading.Thread.__init__(self)
         self.yolo_thread_running=True
@@ -105,6 +111,8 @@ class YOLO_thread(threading.Thread):
         for _ in range(len(self.BOUNDING)):
             self.BOUNDING[_]=float(self.BOUNDING[_])
         self.net = cv2.dnn.readNetFromDarknet(configPath, weightsPath)
+   #detect img sent by im_q, sift out unneccessary results by threshhold and NMS(Non-Max-suppresion)
+   #if results is within the insterested area described by config self.BOUNDING ,crop target area and awaken other thread of classification
     def run(self):
         global what_pt_want
         global yoloimg
@@ -142,7 +150,7 @@ class YOLO_thread(threading.Thread):
                     if confidence > 0.5:
                         box = detection[0:4] * np.array([W, H, W, H])
                         (centerX, centerY, width, height) = box.astype("int")
-                        #边框的左上角
+                        #left upper
                         x = int(centerX - (width / 2))
                         y = int(centerY - (height / 2))
                         boxes.append([x, y, int(width), int(height)])
@@ -178,12 +186,13 @@ class YOLO_thread(threading.Thread):
                             even_model.set()
                             even_license.set() 
                             break#tem
+			    #TODO:work on this 'break'
     def close(self):
         self.yolo_thread_running=False
         print('closing yolo session')
 
 
-
+#license plate recognition,u should install it by pip install hyperlpr first
 class LICENSE_thread(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
@@ -213,7 +222,7 @@ class LICENSE_thread(threading.Thread):
         self.license_thread_running=False
         print('closing license')
 
-
+#color classification, TODO:use KNN to implement this 
 class COLOR_thread(threading.Thread):
     #thread-2
     def __init__(self):
@@ -221,8 +230,8 @@ class COLOR_thread(threading.Thread):
         self.color_thread_running=True
         '''
         #self.daemon = True
-        #modelRecognitionPath = [os.path.join(CURPATH,'lib/hzj_color_model/moxing/deploy.prototxt'),
-        #            os.path.join(CURPATH,'lib/hzj_color_model/moxing/color_gongsi.caffemodel')]            #color_train_iter_20000.caffemodel"]
+        #modelRecognitionPath = [os.path.join(CURPATH,'lib/color_model/moxing/deploy.prototxt'),
+        #            os.path.join(CURPATH,'lib/color_model/moxing/color.caffemodel')]            #color_train_iter_20000.caffemodel"]
         #self.modelRecognition = cv2.dnn.readNetFromCaffe(*modelRecognitionPath)
         #self.color = ('brown','grey','white','pink','purple','red','green','blue','yellow','black')
         '''
@@ -338,7 +347,8 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
             self.playCapture.release()
         self.status = self.STATUS_INIT
         self.pushButton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-
+	
+    #displaying video frame
     def show_video_images(self):
         '''it detected a car of interst in wanted region,after inference,run this function'''
         #if video is open successfully,read it
@@ -388,7 +398,8 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
         pt_video_counter=1
         self.timer.start()
         self.status = (self.STATUS_PLAYING,self.STATUS_PAUSE,self.STATUS_PLAYING)[self.status]
-
+	
+    #run a video 
     def inquiry(self):
         global pt_video_counter
         if not self.pushButton.isEnabled():
@@ -426,7 +437,7 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
             event.ignore()
 
 
-
+#run this method when dobble click one table line
     def display_table(self):
         line=self.tableWidget.currentRow()
         value=self.tableWidget.item(line, 0).text()
@@ -463,7 +474,8 @@ class VideoTimer(QThread):
     #        self.stopped = True
     def set_fps(self, fps):
         self.frequent = fps   
-
+	
+#Qthread used to display table widget
 class Network_daemon(QThread):
     '''daemon thread, function haha is used to display brand, license plate number,color and model'''
     trigger_table = pyqtSignal(str,str) 
