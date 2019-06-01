@@ -109,6 +109,7 @@ class Ui_Dialog(object):
         self.pushButton_2.clicked.connect(Dialog.openimage)
         self.pushButton.clicked.connect(Dialog.inquiry)#inquiry
         self.pushButton_3.clicked.connect(Dialog.webcamera)#inquiry
+        self.pushButton_4.clicked.connect(Dialog.export)
         QtCore.QMetaObject.connectSlotsByName(Dialog)
 
         self.setLayout(global_layout)
@@ -117,11 +118,11 @@ class Ui_Dialog(object):
 
     def retranslateUi(self, Dialog):
         _translate = QtCore.QCoreApplication.translate
-        Dialog.setWindowTitle(_translate("Dialog", "车辆识别系统"))
+        Dialog.setWindowTitle(_translate("Dialog", "Vehicle Recognition System"))
         self.pushButton.setText(_translate("Dialog", "   "))
-        self.pushButton_2.setText(_translate("Dialog", "导入视频"))
-        self.pushButton_3.setText(_translate("Dialog", "启动摄像"))
-        self.pushButton_4.setText(_translate("Dialog", "导出"))
+        self.pushButton_2.setText(_translate("Dialog", "Load Video File"))
+        self.pushButton_3.setText(_translate("Dialog", "Start Webcam"))
+        self.pushButton_4.setText(_translate("Dialog", "Export"))
 
 
 

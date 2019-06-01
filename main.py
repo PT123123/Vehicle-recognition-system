@@ -8,7 +8,6 @@ from PyQt5.QtWidgets import QFileDialog,QMessageBox,QStyle
 from PyQt5.QtGui import QImage,QPixmap
 from PyQt5.QtCore import QObject,pyqtSignal,QThread,QMutex,QMutexLocker,Qt
 from UI_file import *
-
 import numpy as np
 import time
 import threading
@@ -61,6 +60,7 @@ class MODEL_thread(threading.Thread):
             even_model.wait()
             confid_result=[]
             class_result=[]
+            time.sleep(1.0)#buffer
             if not pinpai_img_q.empty():
                 img=pinpai_img_q.get()
             else:
@@ -212,7 +212,6 @@ class LICENSE_thread(threading.Thread):
             even_license.wait()
             image=img_car_q.get()
             tem=HyperLPR_PlateRecogntion(image)
-            print(type(tem))
             plate="".join('%s' %id for id in tem)
             if plate!='':
                 nd.settable(False,plate.split(',')[0].replace('[',''),False,False,False)
@@ -422,7 +421,7 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
     def closeEvent(self,event):
         reply = QMessageBox.question(self,'warning',"u sure u wanna quit?",QMessageBox.Yes | QMessageBox.No,QMessageBox.No)
         if reply == QMessageBox.Yes:
-            guanbudiaoa
+            CantTurnItOff
             event.accept()
             self.reset()
             self.yolo_thread.close()
@@ -446,7 +445,31 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
             QMessageBox.about(self,'error','img not exists')
         result_image=QtGui.QPixmap(image_file).scaled(window.graphicsView_frame.width(), window.graphicsView_frame.height())
         window.graphicsView_frame.setPixmap(result_image)
-    
+    def export(self):
+        try:
+            predix=' saving time'+time.strftime('%H{h}%M{f}%S{s}%Y{y}%m{m}%d{d}').format(y='-', m='-', d='-', h=':', f=':', s=':')
+            save_path='save.txt'
+            if not os.path.exists(os.path.join(CURPATH,save_path)):
+                predix='%s'%('Time')+ '%45s'%('Make')+'%20s'%('Color')+'%15s'%('Model')+'%25s'%('License_Num')+'\n'+predix
+
+            with open(os.path.join(CURPATH,'save.txt'),'a+') as f:
+                f.write(predix+'\n')
+                for line in range(self.line_counter):
+                    values=[]
+                    values.append('%20s'%(self.tableWidget.item(line, 0).text()))
+                    values.append('%10s'%(self.tableWidget.item(line, 1).text()))
+                    values.append('%10s'%(self.tableWidget.item(line, 2).text()))
+                    values.append('%10s'%(self.tableWidget.item(line, 3).text()))
+                    values.append('%5s'%(self.tableWidget.item(line, 4).text()))
+                    f.write('      '.join(values)+'\n')
+            QMessageBox.information(self,'Great！','save successfully to %s'%(save_path))
+        except Exception as e:
+            print(repr(e))
+            fname='error.txt'
+            predix=' when it went wrong:'+time.strftime('%H{h}%M{f}%S{s}{y}%Y%m{m}%d{d}').format(y='Year', m='', d='', h=':', f=':', s=':')
+            with open(fname, 'a+') as f:
+                f.write('\n'+repr(e))
+            QMessageBox.warning(self,'save error!!','  save error message to {}'.format(fname))
 class Communicate(QObject):
     signal = pyqtSignal(str)   
     
@@ -510,4 +533,3 @@ if __name__=='__main__':
     window.show()
     window.pushButton_2.setEnabled(True)
     sys.exit(app.exec_())
-
