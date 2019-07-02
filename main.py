@@ -3,7 +3,7 @@
 import os
 import sys
 import cv2
-from hyperlpr import *#this is new plate recognition function package
+from lib.hyperlpr import hyperlpr#this is new plate recognition function package
 from PyQt5.QtWidgets import QFileDialog,QMessageBox,QStyle
 from PyQt5.QtGui import QImage,QPixmap
 from PyQt5.QtCore import QObject,pyqtSignal,QThread,QMutex,QMutexLocker,Qt
@@ -12,11 +12,13 @@ import numpy as np
 import time
 import threading
 from queue import Queue
-
-#get current path of this file
+import xlwt
+import ctypes
 CURPATH=os.path.dirname(os.path.realpath(__file__))
-
-#many queues use to communicate around different threads
+try:
+    temp = ctypes.windll.LoadLibrary(os.path.join(CURPATH,'opencv_ffmpeg410_64.dll'))
+except:
+    print('opencv')
 color_q=Queue()
 plate_q=Queue()
 type_q=Queue()
@@ -27,13 +29,36 @@ img_car_q=Queue()
 to_color_q=Queue()
 time_q=Queue()
 
-#used to control different thread by calling event.set and event.wait
 even_yolo=threading.Event()
 even_model=threading.Event()
 even_color=threading.Event()
 even_license=threading.Event()
+##########################################################################################
 
-#thread of model classification,not implemented
+def compute_IOU(rec1,rec2):
+    left_column_max  = max(rec1[0],rec2[0])
+    right_column_min = min(rec1[2],rec2[2])
+    up_row_max       = max(rec1[1],rec2[1])
+    down_row_min     = min(rec1[3],rec2[3])
+    #两矩形无相交区域的情况
+    if left_column_max>=right_column_min or down_row_min<=up_row_max:
+        return 0
+    # 两矩形有相交区域的情况
+    else:
+        S1 = (rec1[2]-rec1[0])*(rec1[3]-rec1[1])
+        S2 = (rec2[2]-rec2[0])*(rec2[3]-rec2[1])
+        S_cross = (down_row_min-up_row_max)*(right_column_min-left_column_max)
+        return S_cross/(S1+S2-S_cross)
+        
+        
+def transfer_time_format(str):
+    if "_" in str:
+        _ = str.split("_")
+        return _[0]+"时"+_[1]+"分"+_[2]+"秒"+_[3]+"年"+_[4]+"月"+_[5]+"日"
+    else:
+        #print(str.replace("年","_").replace("月","_").replace("日","").replace("时","_").replace("分","_").replace("秒","_"))
+        return str.replace("年","_").replace("月","_").replace("日","").replace("时","_").replace("分","_").replace("秒","_")
+#https://www.jianshu.com/p/7b6a80faf33f
 class MODEL_thread(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
@@ -94,32 +119,24 @@ class MODEL_thread(threading.Thread):
     def close(self):
         pass
 
-#thread of vehicle detection, trained with darknet yolo, this repo provide coco pretrained model
-
 class YOLO_thread(threading.Thread):
-    #init by loading the model file and load it using opencv DNN 
-    #get detecting bounding box area by loading config.ini, this para is in line 2,which mean index by [1]
     def __init__(self):
         threading.Thread.__init__(self)
         self.yolo_thread_running=True
         #self.daemon = True
-        weightsPath=os.path.join(CURPATH,'yolo/yolov3.weights')
-        configPath=os.path.join(CURPATH,'yolo/yolov3.cfg')
-        labelsPath = os.path.join(CURPATH,'yolo/coco.names')
+        weightsPath=os.path.join(CURPATH,'lib/yolo/yolov3.weights')
+        configPath=os.path.join(CURPATH,'lib/yolo/yolov3.cfg')
+        labelsPath = os.path.join(CURPATH,'lib/yolo/coco.names')
         self.LABELS = open(labelsPath).read().strip().split("\n")
-        self.BOUNDING = open(os.path.join(CURPATH,'config/config.ini'),'r').read().strip().split("\n")[1].split('-')
-        for _ in range(len(self.BOUNDING)):
-            self.BOUNDING[_]=float(self.BOUNDING[_])
         self.net = cv2.dnn.readNetFromDarknet(configPath, weightsPath)
-   #detect img sent by im_q, sift out unneccessary results by threshhold and NMS(Non-Max-suppresion)
-   #if results is within the insterested area described by config self.BOUNDING ,crop target area and awaken other thread of classification
+        self.BOUNDING = [0.300,0.600,0.300,0.600]
+        self.IOU=0.1
     def run(self):
         global what_pt_want
         global yoloimg
-        print('yolo warmed up')
+        print('yolo done')
         while self.yolo_thread_running:
             even_yolo.wait()
-            _=time.time()
           #emptify if queue is not empty
             if not pinpai_q.empty():
                 pinpai_q.get()
@@ -129,18 +146,24 @@ class YOLO_thread(threading.Thread):
                 plate_q.get()
             if not type_q.empty():
                 type_q.get()
-            pt_dict={}
-            boxes = []
-            confidences = []
-            classIDs = []
-            image = cv2.cvtColor(im_q.get(), cv2.COLOR_RGB2BGR)
-            (H, W) = image.shape[:2]
+###############################################################
+            confid_result=[]
+            class_result=[]
+            classIDs=[]
+            if im_q.empty():
+                time.sleep(0.5)
+                continue
+            img = cv2.cvtColor(im_q.get(), cv2.COLOR_RGB2BGR)
+            (H, W) = img.shape[:2]
             ln = self.net.getLayerNames()
             ln = [ln[i[0] - 1] for i in self.net.getUnconnectedOutLayers()]
-            blob = cv2.dnn.blobFromImage(image, 1 / 255.0, (416, 416),swapRB=True, crop=False)
+            blob = cv2.dnn.blobFromImage(img, 1 / 255.0, (416, 416),swapRB=True, crop=False)
             self.net.setInput(blob)
             layerOutputs = self.net.forward(ln)
+            boxes=[]
+            confidences=[]
             for output in layerOutputs:
+                # 对每个检测进行循环
                 for detection in output:
                     scores = detection[5:]
                     classID = np.argmax(scores)
@@ -150,13 +173,15 @@ class YOLO_thread(threading.Thread):
                     if confidence > 0.5:
                         box = detection[0:4] * np.array([W, H, W, H])
                         (centerX, centerY, width, height) = box.astype("int")
-                        #left upper
+                        #边框的左上角
+                        if centerX<0 or centerY<0 or width<0 or height<0:
+                            continue
                         x = int(centerX - (width / 2))
                         y = int(centerY - (height / 2))
                         boxes.append([x, y, int(width), int(height)])
                         confidences.append(float(confidence))
                         classIDs.append(classID)
-            # nms
+            # 极大值抑制
             idxs = cv2.dnn.NMSBoxes(boxes, confidences, 0.2,0.3)
             if len(idxs) > 0:
                 for i in idxs.flatten():
@@ -164,35 +189,38 @@ class YOLO_thread(threading.Thread):
                     (w, h) = (boxes[i][2], boxes[i][3])
                     #, confidences[i]
                     type_q.put(self.LABELS[classIDs[i]])
-                    expression1=image.shape[0]*self.BOUNDING[0]<(int(x)+int(x+w))/2<image.shape[1]*self.BOUNDING[1]
-                    expression2=image.shape[2]*self.BOUNDING[3]<(int(y)+int(y+h))/2<image.shape[0]*self.BOUNDING[3]
+                    rec_=[W*self.BOUNDING[0],H*self.BOUNDING[2],W*self.BOUNDING[1],H*self.BOUNDING[3]]
+                    rec_car=[x,y,x+w,y+h]
+                    IOU = compute_IOU(rec_,rec_car)
+                    print(IOU)
+                    expression1=True
+                    expression2=IOU>self.IOU
                     if expression1:
                         if expression2:
-                            if h<0 or w<0 or y<0 or x<0:
-                                continue
-                            nd.settable(False,False,self.LABELS[classIDs[i]],False,False)
-                            img_crop=image[y:y+h,x:x+w]
-                            save_time=time.asctime(time.localtime(time.time())).replace(' ','_').replace(':','_')
-                            flag_=False
-                            flag_=cv2.imwrite(os.path.join(CURPATH,'archives/{}.jpg'.format(save_time)),img_crop)#save vehicle image by name of time
+                            nd.settable(False,False,self.LABELS[classID],False,False)
+                            img_crop=img[y:y+h,x:x+w]
+                            ################################
+                            save_time = time.strftime('%H{h}%M{f}%S{s}%Y{y}%m{m}%d{d}').format(y='年', m='月', d='日', h='时', f='分', s='秒')
+                            flag_=cv2.imwrite(os.path.join(CURPATH,'archives/{}.jpg'.format(transfer_time_format(save_time))),img_crop)#save vehicle image by name of time
                             if not flag_:
-                                print('img saving error')
+                                print('图片保存失败')
                             nd.settable(False,False,False,False,save_time)                       
                             #########################
                             pinpai_img_q.put(img_crop)
-                            to_color_q.put(img_crop)
+                            to_color_q.put(img_crop)#img_crop is a PIL format image
                             img_car_q.put(img_crop)
+                            if not even_model.is_set():
+                                even_model.set()
                             even_color.set()
-                            even_model.set()
-                            even_license.set() 
+                            even_license.set()
+                            even_yolo.clear()
                             break#tem
-			    #TODO:work on this 'break'
     def close(self):
         self.yolo_thread_running=False
         print('closing yolo session')
 
 
-#license plate recognition,u should install it by pip install hyperlpr first
+
 class LICENSE_thread(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
@@ -221,7 +249,7 @@ class LICENSE_thread(threading.Thread):
         self.license_thread_running=False
         print('closing license')
 
-#color classification, TODO:use KNN to implement this 
+
 class COLOR_thread(threading.Thread):
     #thread-2
     def __init__(self):
@@ -250,7 +278,7 @@ class COLOR_thread(threading.Thread):
         self.color_thread_running=False
         print('color closed')
             
-class mywindow(QtWidgets.QWidget,Ui_Dialog):
+class mywindow(Ui_Dialog):
     global what_pt_want
     status = 0
     video_type = 0
@@ -259,8 +287,9 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
     STATUS_INIT = 0
     STATUS_PLAYING = 1
     STATUS_PAUSE = 2
+    CAMID='qq'
+    BEFORE='0'
     global pt_video_counter
-
     def __init__(self):
         super(mywindow,self).__init__()
         self.setupUi(self)
@@ -275,11 +304,6 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
         self.model_thread.start()
         ###########################
         self.pushButton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.pinpai_count=0
-        self.color_count=0
-        self.type_count=0
-        self.plate_count=0
-        self.time_count=0
         self.line_counter=0
         self.table_dict={}
         self.table_dict['time']=Queue()
@@ -287,12 +311,10 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
         self.table_dict['color']=Queue()
         self.table_dict['plate']=Queue()
         self.table_dict['type']=Queue()
-        
-
         self.timer = VideoTimer()
         self.timer.timeSignal.signal[str].connect(self.show_video_images)#once timer emit a signal,run show_video_images()
-        self.INTERVAL = int(open(os.path.join(CURPATH,'config/config.ini')).read().strip().split("\n")[0])
-        self.VIS_RECGTANGLE = int(open(os.path.join(CURPATH,'config/config.ini')).read().strip().split("\n")[2])
+        self.INTERVAL = 1
+        self.VIS_RECGTANGLE = 0
     def openimage(self):
         global pt_video_counter
         self.video_type=self.TYPE_VIDEO
@@ -312,7 +334,11 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
                 pt_video_counter=1
                 self.playCapture.open(what_pt_want)
                 fps = self.playCapture.get(cv2.CAP_PROP_FPS)#used to be cv2.CAP_PROP_FPS
-                self.timer.set_fps(fps)
+                if fps ==0:
+                    QMessageBox.warning(self,'error','fps不能为0')
+                    return
+                else:
+                        self.timer.set_fps(fps)
                 self.timer.start()
                 #self.timer.stopped=False 
                 self.pushButton.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
@@ -321,15 +347,21 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
             return
 
     def settable_function(self,type_signal,result):
-        #self.srollBar=self.tableWidget
         self.table_dict[type_signal].put(result)
+        #print(type_signal,' :   ',self.table_dict[type_signal].qsize())
         if not (self.table_dict['time'].empty() or self.table_dict['type'].empty() or self.table_dict['color'].empty() 
 		or self.table_dict['plate'].empty() or self.table_dict['pinpai'].empty()):
             pinpai=self.table_dict['pinpai'].get()
+            
             plate=self.table_dict['plate'].get()
             time= self.table_dict['time'].get()
             type= self.table_dict['type'].get()
             color=self.table_dict['color'].get()
+            if self.BEFORE == plate.strip():
+            	return#6_13.P.M.
+            else:
+                pass
+                #print(plate.strip()+'    '+self.BEFORE)
             if not pinpai ==plate:
                 self.tableWidget.insertRow(self.line_counter)
                 self.tableWidget.setItem(self.line_counter,0,QTableWidgetItem(time))
@@ -338,6 +370,8 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
                 self.tableWidget.setItem(self.line_counter,3,QTableWidgetItem(type))
                 self.tableWidget.setItem(self.line_counter,4,QTableWidgetItem(plate))
                 self.line_counter+=1
+                self.tableWidget.verticalScrollBar().setValue(self.line_counter)
+                self.BEFORE=plate.strip()
        
    
     def reset(self):
@@ -346,8 +380,7 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
             self.playCapture.release()
         self.status = self.STATUS_INIT
         self.pushButton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-	
-    #displaying video frame
+
     def show_video_images(self):
         '''it detected a car of interst in wanted region,after inference,run this function'''
         #if video is open successfully,read it
@@ -357,7 +390,7 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
             if success:
                 if self.VIS_RECGTANGLE:
                     cv2.rectangle(frame,(int(frame.shape[1]*self.yolo_thread.BOUNDING[0]),int(frame.shape[0]*self.yolo_thread.BOUNDING[2])),
-					(int(frame.shape[1]*self.yolo_thread.BOUNDING[1]),int(frame.shape[0]*self.yolo_thread.BOUNDING[3])),(0,255,0),2)
+					(int(frame.shape[1]*self.yolo_thread.BOUNDING[1]),int(frame.shape[0]*self.yolo_thread.BOUNDING[3])),(0,255,0),3)
                 global pt_video_counter
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 height, width = frame.shape[:2]
@@ -369,8 +402,8 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
                 if (pt_video_counter%(int)(self.timer.frequent*self.INTERVAL)==0):#INTERVAL
                     if True:#not even_yolo.is_set():
                         if True:#not even_model.is_set():
-                            im_q.put(frame)
-                            even_yolo.set()#test3.6                                                                           
+                            im_q.put(frame)#6_16,modified
+                            even_yolo.set()                                                                          
             else:
                 print("read failed, no frame data")
                 self.reset()
@@ -386,10 +419,10 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
             return
         else:
             self.pushButton.setEnabled(True)
-        self.playCapture = cv2.VideoCapture(0)
+        self.playCapture = cv2.VideoCapture(self.CAMID.strip())
         fps = self.playCapture.get(cv2.CAP_PROP_FPS)#used to be cv2.CAP_PROP_FPS
         if fps ==0:
-            QMessageBox.warning(self,'error','no webcamera')
+            QMessageBox.warning(self,'error','fps不能为0')
             return
         self.timer.set_fps(fps) 
         self.video_type = self.TYPE_CAMERA
@@ -397,8 +430,7 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
         pt_video_counter=1
         self.timer.start()
         self.status = (self.STATUS_PLAYING,self.STATUS_PAUSE,self.STATUS_PLAYING)[self.status]
-	
-    #run a video 
+
     def inquiry(self):
         global pt_video_counter
         if not self.pushButton.isEnabled():
@@ -421,7 +453,9 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
     def closeEvent(self,event):
         reply = QMessageBox.question(self,'warning',"u sure u wanna quit?",QMessageBox.Yes | QMessageBox.No,QMessageBox.No)
         if reply == QMessageBox.Yes:
-            CantTurnItOff
+            for filepath in os.listdir(os.path.join(CURPATH,'archives')):
+                os.remove(os.path.join(os.path.join(CURPATH,'archives'),filepath))
+            guanbudiaoa
             event.accept()
             self.reset()
             self.yolo_thread.close()
@@ -435,24 +469,25 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
         else:
             event.ignore()
 
-
-#run this method when dobble click one table line
     def display_table(self):
         line=self.tableWidget.currentRow()
         value=self.tableWidget.item(line, 0).text()
-        image_file=os.path.join(CURPATH,'archives/{}.jpg'.format(value))
+        image_file=os.path.join(CURPATH,'archives/{}.jpg'.format(transfer_time_format(value)))
         if not os.path.exists(image_file):
-            QMessageBox.about(self,'error','img not exists')
+            QMessageBox.about(self,'error','图片不存在')
+            return
         result_image=QtGui.QPixmap(image_file).scaled(window.graphicsView_frame.width(), window.graphicsView_frame.height())
         window.graphicsView_frame.setPixmap(result_image)
-    def export(self):
+    def export_txt(self):
+        save_path=QFileDialog.getSaveFileName(self,'save file',CURPATH,'txt(*txt)')
+        save_path=save_path[0]
+        if not save_path.endswith('.xls'):
+            save_path = save_path+'.txt'
         try:
-            predix=' saving time'+time.strftime('%H{h}%M{f}%S{s}%Y{y}%m{m}%d{d}').format(y='-', m='-', d='-', h=':', f=':', s=':')
-            save_path='save.txt'
+            predix=' 保存时间：'+time.strftime('%H{h}%M{f}%S{s}%Y{y}%m{m}%d{d}').format(y='年', m='月', d='日', h='时', f='分', s='秒')
             if not os.path.exists(os.path.join(CURPATH,save_path)):
-                predix='%s'%('Time')+ '%45s'%('Make')+'%20s'%('Color')+'%15s'%('Model')+'%25s'%('License_Num')+'\n'+predix
-
-            with open(os.path.join(CURPATH,'save.txt'),'a+') as f:
+                predix='%s'%('时间')+ '%45s'%('车标')+'%20s'%('颜色')+'%15s'%('车型')+'%25s'%('车牌')+'\n'+predix
+            with open(os.path.join(CURPATH,save_path),'a+') as f:
                 f.write(predix+'\n')
                 for line in range(self.line_counter):
                     values=[]
@@ -462,14 +497,40 @@ class mywindow(QtWidgets.QWidget,Ui_Dialog):
                     values.append('%10s'%(self.tableWidget.item(line, 3).text()))
                     values.append('%5s'%(self.tableWidget.item(line, 4).text()))
                     f.write('      '.join(values)+'\n')
-            QMessageBox.information(self,'Great！','save successfully to %s'%(save_path))
+            QMessageBox.information(self,'Great！','已成功保存为%s'%(save_path))
         except Exception as e:
             print(repr(e))
             fname='error.txt'
-            predix=' when it went wrong:'+time.strftime('%H{h}%M{f}%S{s}{y}%Y%m{m}%d{d}').format(y='Year', m='', d='', h=':', f=':', s=':')
+            predix=' 出错时间：'+time.strftime('%H{h}%M{f}%S{s}%Y{y}%m{m}%d{d}').format(y='年', m='月', d='日', h='时', f='分', s='秒')
             with open(fname, 'a+') as f:
                 f.write('\n'+repr(e))
             QMessageBox.warning(self,'save error!!','  save error message to {}'.format(fname))
+    def export(self):
+        save_path=QFileDialog.getSaveFileName(self,'save file',CURPATH,'xls(*xls)')
+        save_path=save_path[0]
+        if not save_path:
+            return
+        try:
+            workbook = xlwt.Workbook(encoding = 'utf-8')
+            worksheet = workbook.add_sheet('My worksheet',cell_overwrite_ok=True)
+            if not os.path.exists(os.path.join(CURPATH,save_path)):
+                pass
+            _=0
+            for content_ in ['时间','车标','颜色','车型','车牌']:
+                worksheet.write(0,_,label=content_)
+                _+=1
+            for line in range(self.line_counter):
+                for _ in range(5):
+                    worksheet.write(line+1, _ ,label=self.tableWidget.item(line,_).text())
+                if not save_path.endswith('.xls'):
+                    save_path = save_path+'.xls'
+                workbook.save(save_path)
+        except Exception as e:
+            print(repr(e))
+            QMessageBox.warning(self,'保存失败',repr(e))
+            return
+        QMessageBox.information(self,'保存成功',' 已保存到 %s'%(str(save_path)))
+    
 class Communicate(QObject):
     signal = pyqtSignal(str)   
     
@@ -492,19 +553,20 @@ class VideoTimer(QThread):
                 return
             self.timeSignal.signal.emit("1")
             time.sleep(1 / self.frequent)
-    #def stop(self):
-    #    with QMutexLocker(self.mutex):
-    #        self.stopped = True
     def set_fps(self, fps):
-        self.frequent = fps   
-	
-#Qthread used to display table widget
+        self.frequent = fps
+
 class Network_daemon(QThread):
     '''daemon thread, function haha is used to display brand, license plate number,color and model'''
     trigger_table = pyqtSignal(str,str) 
     def __int__(self):
         super(Network_daemon, self).__init__()
-    def run(self): 
+    def run(self):
+        while True:
+            time.sleep(5)
+            if not pinpai_img_q.empty():
+                if not even_model.is_set():
+                    even_model.set()
         return  
     def settable(self,pinpaistr,platestr,typestr,colorstr,timestr): 
         #run the inquiry1
@@ -526,6 +588,7 @@ class Network_daemon(QThread):
  
 if __name__=='__main__':
     app = QtWidgets.QApplication(sys.argv)
+    global window
     window = mywindow()
     nd=Network_daemon()
     nd.trigger_table.connect(window.settable_function)
@@ -533,3 +596,4 @@ if __name__=='__main__':
     window.show()
     window.pushButton_2.setEnabled(True)
     sys.exit(app.exec_())
+
