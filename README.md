@@ -1,4 +1,5 @@
 
+DEMO
 # get started：
 1. PyQt5, 3.3以上的cv2 ，hyperlpr
 2. 暂时不提供车型识别与颜色分类的模型
@@ -14,5 +15,5 @@ https://github.com/zeusees/HyperLPR
 3. 视频播放界面基础：
 https://github.com/fengtangzheng/pyqt5-opencv-video
 
-# TODO
-连接KNN做颜色识别
+# ~~TODO~~
+~~连接KNN做颜色识别~~
