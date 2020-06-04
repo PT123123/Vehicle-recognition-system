@@ -19,17 +19,17 @@ try:
     temp = ctypes.windll.LoadLibrary(os.path.join(CURPATH,'opencv_ffmpeg410_64.dll'))
 except:
     print('opencv')
-color_q=Queue()
-plate_q=Queue()
-type_q=Queue()
+color_q=Queue()#used to pass the result of color
+plate_q=Queue()#used to pass the result of plate recognition
+type_q=Queue()#same as above
 pinpai_q=Queue()
-pinpai_img_q=Queue()
+pinpai_img_q=Queue()# used to pass the cv2-format img between threads
 im_q=Queue()
 img_car_q=Queue()
 to_color_q=Queue()
 time_q=Queue()
 
-even_yolo=threading.Event()
+even_yolo=threading.Event()# to synchronize between tasks
 even_model=threading.Event()
 even_color=threading.Event()
 even_license=threading.Event()
@@ -77,7 +77,7 @@ class MODEL_thread(threading.Thread):
         self.modelPATH=[os.path.join(CURPATH,'lib/model/deploy.prototxt'),
 		os.path.join(CURPATH,'lib/model/VGG_VOC2007_SSD_300x300_iter_20710.caffemodel')]
         self.model=cv2.dnn.readNetFromCaffe(*self.modelPATH)
-        '''
+        '''#暂不提供车牌功能,注释掉
     def run(self):
         global what_pt_want  
         print("pinpai functionality loaded successfully-------------------------------------")
@@ -261,7 +261,7 @@ class COLOR_thread(threading.Thread):
         #            os.path.join(CURPATH,'lib/color_model/moxing/color.caffemodel')]            #color_train_iter_20000.caffemodel"]
         #self.modelRecognition = cv2.dnn.readNetFromCaffe(*modelRecognitionPath)
         #self.color = ('brown','grey','white','pink','purple','red','green','blue','yellow','black')
-        '''
+        '''#颜色模型已去除,暂不提供,请fork后自行DIY
     def run(self):
         while self.color_thread_running:
             even_color.wait()
@@ -505,7 +505,7 @@ class mywindow(Ui_Dialog):
             with open(fname, 'a+') as f:
                 f.write('\n'+repr(e))
             QMessageBox.warning(self,'save error!!','  save error message to {}'.format(fname))
-    def export(self):
+    def export(self):#先用.xls格式保存结果
         save_path=QFileDialog.getSaveFileName(self,'save file',CURPATH,'xls(*xls)')
         save_path=save_path[0]
         if not save_path:
